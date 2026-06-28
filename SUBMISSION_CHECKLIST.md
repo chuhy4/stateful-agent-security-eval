@@ -28,8 +28,8 @@ All sprint results are **additive** — nothing in the current draft needs rewri
 - ✅ Marathon test cited: "50-session marathon, byte-identical at checkpoints 10/20/30/40/50, persistence bounded by database durability."
 
 **Completed experiments (this machine):**
-- ✅ frontier API frontier probe: 21 models × N=10 = 210 runs, 0% ASR
-- ✅ frontier API sandbox probe: 4 Latent Carriers × N=10-16 = 46 runs, 0% bypass
+- ✅ frontier model probe: 21 models × N=10 = 210 runs, 0% ASR
+- ✅ frontier sandbox probe: 4 Latent Carriers × N=10-16 = 46 runs, 0% bypass
 - ✅ Bedrock N=40 date sweep: 5 models × 3 dates, all p>0.017 (null confirmed)
 - ✅ Supply chain: parked (logical argument in paper)
 - ✅ Defense factorial: 5,040 runs (Mac Studio, completed April)
