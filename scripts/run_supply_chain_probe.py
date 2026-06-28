@@ -32,7 +32,7 @@ N = 10
 
 # Frontier injector (via frontier API API)
 GOVTECH_BASE_URL = "https://api.openai.com/platform/models/v1"
-GOVTECH_API_KEY = "***REMOVED***"
+GOVTECH_API_KEY = os.environ["GOVTECH_API_KEY"]
 INJECTOR_MODEL = "gpt-5.1"
 
 # Open-source executor (via local Ollama) — ONLY if Ollama is running
