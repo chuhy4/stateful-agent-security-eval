@@ -55,13 +55,17 @@ inclusion: manual
 - Phase 0: ✅ Complete (results/crossmodel_date_sweep/)
 - Phase 1: ✅ Complete — 50/50 runs (5 variants × N=10 × qwen2.5:14b)
 - Phase 2: RATG factorial — 🔄 running (9 models × 2 defenses × 2 attacks × N=40 = 1,440 runs)
-  - Progress as of 09:30 SGT Jun 30: 209/720 DTA runs (5 clean models done; sprint relaunched after config fix)
+  - Progress as of 18:15 SGT Jun 30: **416/720 DTA runs (57%)**
+  - Models done: qwen2.5:14b ✅, qwen3:32b ✅, qwen2.5:72b ✅, qwen3.5:122b ✅ (all 80/80)
+  - Currently running: qwq:32b (49/80), qwen3.5:9b (40/80), gpt-oss:20b (7/80)
+  - Remaining: glm-4.7-flash:bf16 (0/80), gpt-oss-safeguard:120b (0/80)
+  - **qwq:32b bottleneck**: ~1800s/run (30 min) — 31 remaining runs ≈ 15.5h alone
   - **Config errors fixed (Iteration 53):** trigger suffix restored + GLM quantization corrected (q8_0→bf16)
   - Faulty data wiped: 80 rows (qwen3.5:9b + glm:q8_0) removed; 207 clean rows kept
   - qwq:32b genuine weight drift (0%→100% ASR) — documented, unfixable
-  - Actual timing: 73s/run avg (matches original factorial data: 23–194s/run depending on model)
-- Phase 3: 7B judge — queued (3 models × 2 defenses × N=40 = 240 runs)
-- **CORRECTED total wall time: ~44 hours ≈ 2 days. ETA: ~Wed July 1 evening SGT**
+  - Actual timing: 73s/run avg overall, but qwq:32b is 1800s/run (reasoning model)
+- Phase 3: 7B judge — queued (3 models × 2 defenses × N=40 = 240 runs, ~4-6h)
+- **REVISED ETA: ~Thursday July 2, 00:00–02:00 SGT** (qwq:32b is 15.5h of remaining ~28-30h)
 - Original 11.5-day estimate was wrong — it used pre-governor N=10 timing (~15 min/run) instead of actual factorial timing (23–194s/run). Verified: RATG runs are structurally identical to original factorial (4 sessions, correct injection/recall/exfiltration, same per-model timings).
 - Ollama confirmed: all 6 flags correct, M3 Ultra 77.8 GiB available, `MAX_LOADED_MODELS=1` enforced
 - Config fixes applied: `ratg_factorial.yaml`, `payload_variants.yaml`, `src/defenses/ratg.py`
