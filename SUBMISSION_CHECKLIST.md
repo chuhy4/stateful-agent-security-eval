@@ -10,15 +10,15 @@
 |---|---|---|---|
 | 0 | Cross-model date sweep (4 models × 2 dates × N=10) | ~5h | Minor footnote in §4.6 |
 | 1 | Payload variants (5 framings × qwen2.5:14b × N=10) | ~1h | New paragraph §3.1 if ASR stays 100% |
-| 2 | RATG factorial (9 models × 2 defenses × 2 attacks × N=40) | ~3 days | **Major** — new §3.3.x if ASR drops |
+| 2 | RATG factorial (9 models × 2 defenses × 2 attacks × N=40) | ~3 days | **Major** - new §3.3.x if ASR drops |
 | 3 | 7B judge (3 models × 2 defenses × N=40) | ~8h | Revise §3.2.4 if detection improves |
 
-All sprint results are **additive** — nothing in the current draft needs rewriting regardless of outcomes.
+All sprint results are **additive** - nothing in the current draft needs rewriting regardless of outcomes.
 
-**When sprint Phase 2 (RATG) completes — writing actions:**
+**When sprint Phase 2 (RATG) completes - writing actions:**
 - If RATG reduces ASR: add §3.3.2 "Recall-Time Filtering (RATG)" after Memory Sandbox section. First retrieval defense that works. Major finding.
 - If RATG has no effect: add 1 paragraph to §3.2.4 (RAG LLM Judge): "Even a rule-aware recall-time filter designed specifically for this attack fails against semantic masking at the 7B/14B judge capacity level."
-- If partial: most interesting — characterize which models/conditions it works for and why.
+- If partial: most interesting - characterize which models/conditions it works for and why.
 
 **When sprint Phase 3 (7B judge) completes:**
 - If 7B detects what 1.5B couldn't: revise §3.2.4 to bound the capability threshold. "A 7B judge achieves X% detection vs 0% for 1.5B."
@@ -70,10 +70,10 @@ tar -czf paper-v4-arxiv.tar.gz paper.tex math_commands.tex references.bib iclr20
 
 ## Source of truth hierarchy
 
-1. `paper/paper.tex` — submission text
-2. `canonical_numbers.md` — every number traces here
-3. `FINDINGS.md` + `docs/index.md` — public reader-facing
-4. `README.md` — repo landing page
+1. `paper/paper.tex` - submission text
+2. `canonical_numbers.md` - every number traces here
+3. `FINDINGS.md` + `docs/index.md` - public reader-facing
+4. `README.md` - repo landing page
 
 ## GitHub repo (public-facing)
 
