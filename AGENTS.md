@@ -25,16 +25,16 @@ There is no dev server, build step, or lint script for this research repo. All a
 
 | File | Use it when… |
 |------|-------------|
-| `.Codex/reference/update-reminder.md` | **Start here first**. Current status, what changed recently, post-change checklist (did you update learningjourney + paper + knowledge?). Also has the `analyze_results.py` usage note. |
-| `.Codex/reference/learningjourney.md` | Debugging weird model behaviour, understanding why a design choice was made, reviewing the full 45-iteration timeline. Last updated: Iteration 45 (qwq:32b Draft-Only Executor, memory_sandbox RAG bypass). |
-| `.Codex/reference/knowledge.md` | Writing the paper (§1–§42 reference), mechanistic findings (why gemma4's BTCR flip matters), tool contract design, statistical methodology. Last updated: Section 25 (artifact 7, thread-safety race). |
-| `.Codex/reference/paper.md` | Writing or updating §1–§4, reviewing findings and framing, checking related-work positioning. Last updated: paper body complete, arXiv ready. |
-| `.Codex/reference/n10_verification_summary.md` | Canonical archetype classifications, rescreen methodology, reclassification rationale (qwen3:32b, qwen3.5:9b). Use when reviewing per-model behaviour in the paper. |
-| `.Codex/reference/mechanistic-analysis.md` | Mechanistic framing - always report *why* a defense works or fails, not just the ASR number. Includes checklist, ablation templates, paper framing guidance. |
+| `.ai/rules/update-reminder.md` | **Start here first**. Current status, what changed recently, post-change checklist (did you update learningjourney + paper + knowledge?). Also has the `analyze_results.py` usage note. |
+| `.ai/rules/learningjourney.md` | Debugging weird model behaviour, understanding why a design choice was made, reviewing the full iteration timeline. Last updated: Iteration 56 (v4 integration: RATG mechanical section, daemon-degradation appendix). |
+| `.ai/rules/knowledge.md` | Writing the paper (§1–§42 reference), mechanistic findings (why gemma4's BTCR flip matters), tool contract design, statistical methodology. |
+| `.ai/rules/paper.md` | Writing or updating §1–§4, reviewing findings and framing, checking related-work positioning. |
+| `.ai/rules/n10_verification_summary.md` | Canonical archetype classifications, rescreen methodology, reclassification rationale (qwen3:32b, qwen3.5:9b). Use when reviewing per-model behaviour in the paper. |
+| `.ai/rules/mechanistic-analysis.md` | Mechanistic framing - always report *why* a defense works or fails, not just the ASR number. Includes checklist, ablation templates, paper framing guidance. |
 
-To load any file: ask "Read `.Codex/reference/filename.md`" and I'll pull it into context.
+To load any file: ask "Read `.ai/rules/filename.md`" and I'll pull it into context.
 
-Global rules in `~/.Codex/rules/` also apply (audit-protocols, anti-hallucination, global-workflow, etc.).
+Global rules in `~/.ai/rules/` also apply (audit-protocols, anti-hallucination, global-workflow, etc.).
 
 ---
 
