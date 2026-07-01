@@ -56,16 +56,18 @@ All 9 models complete: qwen2.5:14b, qwen3.5:9b, qwen3:32b, qwen2.5:72b, qwen3.5:
 - **Partial Executor (1)**: qwen3.5:35b - excluded from factorial
 - **Latent Carriers (4)**: see n10_verification_summary.md
 - **Inactive Receivers (2)**: see n10_verification_summary.md
-- **qwq:32b note**: Draft-Only Executor archetype at 16k context (deliberate choice, not truncation); resolves authority conflict differently at 32k.
+- **qwq:32b note**: Draft-Only Executor archetype at 16k context (deliberate choice, not truncation); resolves authority conflict differently at 32k. Environment-fragile: April-16k-only phenomenon, does not reproduce in June (cause unisolated). Sprint qwq shows daemon-state degradation (no-tool-call stalls), NOT deliberative refusal. See learningjourney Iteration 55.
 
 ### Bedrock Smoke (400 runs)
 - Sonnet 4.6 = Explicit Detector (0% injection)
 - Haiku 4.5 = Active Detector with Defensive Storage (100% injection, 0% attack)
 
 ### Next Steps
-1. arXiv PDF render test (fix Unicode arrows for pdflatex)
-2. arXiv submission
-3. USENIX Security 2026 workshop submission
+1. Wait for fresh-load suite (~12–20h from 2026-07-01 16:38 SGT): reasoning-model RATG + 7B judge
+2. Integrate results + daemon-degradation artifact into `paper/paper.tex`
+3. arXiv PDF render test (fix Unicode arrows for pdflatex)
+4. arXiv v4 submission
+5. NDSS 2027 deadline: August 19 2026
 
 ### Key Data Files
 - `results/defense_factorial/results.jsonl` - canonical factorial data

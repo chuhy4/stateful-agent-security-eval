@@ -1,23 +1,28 @@
 # arXiv Submission Checklist
 
-> **Last updated**: 2026-06-27. Source: `paper/paper.tex`
+> **Last updated**: 2026-07-01. Source: `paper/paper.tex`
 
 ## Current Status
 
-**Paper is complete and submittable as-is.** All experiments on this machine are done. Waiting on Mac Studio sprint (~4 days, launched 2026-06-26 18:00 SGT):
+**Paper v4 needs three edits before submission.** The Mac Studio sprint was STOPPED (reasoning models degraded under long-running daemon — see learningjourney Iteration 55). A fresh-load suite replaces it (launched 2026-07-01 16:38 SGT, ~12–20h).
 
-| Phase | What | ETA | Impact on paper |
-|---|---|---|---|
-| 0 | Cross-model date sweep (4 models × 2 dates × N=10) | ~5h | Minor footnote in §4.6 |
-| 1 | Payload variants (5 framings × qwen2.5:14b × N=10) | ~1h | New paragraph §3.1 if ASR stays 100% |
-| 2 | RATG factorial (9 models × 2 defenses × 2 attacks × N=40) | ~3 days | **Major** - new §3.3.x if ASR drops |
-| 3 | 7B judge (3 models × 2 defenses × N=40) | ~8h | Revise §3.2.4 if detection improves |
+**What's done (clean, publishable):**
+- Phase 0 (date sweep): ✅ complete
+- Phase 1 (payload variants): ✅ complete (50/50)
+- 3 mechanical models RATG: ✅ clean (100%→0%, qwen2.5:14b/72b, qwen3:32b)
 
-All sprint results are **additive** - nothing in the current draft needs rewriting regardless of outcomes.
+**What's running (fresh-load suite, replaces stopped sprint):**
+- 6 reasoning models × {no_defense, ratg} × DTA × N=40 = 480 runs (fresh daemon per model)
+- 3 models × {no_defense, rag_llm_judge_7b} × DTA × N=40 = 240 runs (fills Phase 3)
+- Total: 720 runs. ETA: ~04:00–08:00 SGT Jul 2
 
-**When sprint Phase 2 (RATG) completes - writing actions:**
-- If RATG reduces ASR: add §3.3.2 "Recall-Time Filtering (RATG)" after Memory Sandbox section. First retrieval defense that works. Major finding.
-- If RATG has no effect: add 1 paragraph to §3.2.4 (RAG LLM Judge): "Even a rule-aware recall-time filter designed specifically for this attack fails against semantic masking at the 7B/14B judge capacity level."
+**v4 writing actions (after fresh-load suite completes):**
+1. Add daemon-degradation evaluation artifact paragraph (source: `paper/v4_daemon_artifact.md`) to §3.4
+2. Add RATG section: mechanical models 100%→0%; reasoning models from fresh-load suite results
+3. Add 7B-judge result to §3.2.4 (bounds capability threshold)
+4. Do NOT add BSI §4.7/§4.8 reasoning-class instability claim (retracted — Iteration 55)
+5. Do NOT widen "qwq-specific" scoping (sprint 0% was degradation, not safety)
+6. Delete `paper/v4_daemon_artifact.md` and `paper/v4_draft_additions.md` after integration
 - If partial: most interesting - characterize which models/conditions it works for and why.
 
 **When sprint Phase 3 (7B judge) completes:**
