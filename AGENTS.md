@@ -1,6 +1,6 @@
 # Agentic Attack Evaluation - Project Map
 
-**Status**: Defense factorial complete (5,040 runs, 0 errors). Paper body complete (§1–§4, all prose). arXiv-ready pending PDF render test.
+**Status**: Defense factorial complete (5,040 runs, 0 errors). Paper body complete (§1–§4, all prose). arXiv v4 submitted 2026-07-03.
 
 ---
 
@@ -26,7 +26,7 @@ There is no dev server, build step, or lint script for this research repo. All a
 | File | Use it when… |
 |------|-------------|
 | `.ai/rules/update-reminder.md` | **Start here first**. Current status, what changed recently, post-change checklist (did you update learningjourney + paper + knowledge?). Also has the `analyze_results.py` usage note. |
-| `.ai/rules/learningjourney.md` | Debugging weird model behaviour, understanding why a design choice was made, reviewing the full iteration timeline. Last updated: Iteration 56 (v4 integration: RATG mechanical section, daemon-degradation appendix). |
+| `.ai/rules/learningjourney.md` | Debugging weird model behaviour, understanding why a design choice was made, reviewing the full iteration timeline. Last updated: Iteration 61 (122b reproducibility investigation, 7B-judge finding, RATG downgrade, causal taxonomy). |
 | `.ai/rules/knowledge.md` | Writing the paper (§1–§42 reference), mechanistic findings (why gemma4's BTCR flip matters), tool contract design, statistical methodology. |
 | `.ai/rules/paper.md` | Writing or updating §1–§4, reviewing findings and framing, checking related-work positioning. |
 | `.ai/rules/n10_verification_summary.md` | Canonical archetype classifications, rescreen methodology, reclassification rationale (qwen3:32b, qwen3.5:9b). Use when reviewing per-model behaviour in the paper. |
@@ -63,11 +63,15 @@ All 9 models complete: qwen2.5:14b, qwen3.5:9b, qwen3:32b, qwen2.5:72b, qwen3.5:
 - Haiku 4.5 = Active Detector with Defensive Storage (100% injection, 0% attack)
 
 ### Next Steps
-1. Wait for fresh-load suite (~12–20h from 2026-07-01 16:38 SGT): reasoning-model RATG + 7B judge
-2. Integrate results + daemon-degradation artifact into `paper/paper.tex`
-3. arXiv PDF render test (fix Unicode arrows for pdflatex)
-4. arXiv v4 submission
-5. NDSS 2027 deadline: August 19 2026
+1. ~~Consistency sweep~~ — DONE
+2. ~~pdflatex render test~~ — DONE (28 pages, 0 errors)
+3. ~~arXiv v4 submitted 2026-07-03~~ — DONE
+4. NDSS 2027 deadline: August 19 2026
+
+### Key Decisions (Iteration 61, 2026-07-03)
+- 122b RATG DOWNGRADED to environment-fragile (baseline non-reproducible post-reboot)
+- Locked RATG evidence: 3 mechanical only (qwen2.5:14b/72b, qwen3:32b)
+- 7B judge: capability-bound finding (0/120 malicious-doc decisions flagged, ASR 100%→100%)
 
 ### Key Data Files
 - `results/defense_factorial/results.jsonl` - canonical factorial data

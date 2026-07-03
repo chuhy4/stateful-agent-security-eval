@@ -1,29 +1,38 @@
 # arXiv Submission Checklist
 
-> **Last updated**: 2026-07-01. Source: `paper/paper.tex`
+> **Last updated**: 2026-07-02. Source: `paper/paper.tex`
 
 ## Current Status
 
-**Paper v4 needs three edits before submission.** The Mac Studio sprint was STOPPED (reasoning models degraded under long-running daemon — see learningjourney Iteration 55). A fresh-load suite replaces it (launched 2026-07-01 16:38 SGT, ~12–20h).
+**Paper v4 submitted to arXiv on 2026-07-03.** v3 superseded.
 
-**What's done (clean, publishable):**
+**What's done (clean, publishable RATG evidence, 4 cells):**
 - Phase 0 (date sweep): ✅ complete
 - Phase 1 (payload variants): ✅ complete (50/50)
 - 3 mechanical models RATG: ✅ clean (100%→0%, qwen2.5:14b/72b, qwen3:32b)
+- 1 reasoning model RATG: ✅ clean (100%→0%, qwen3.5:122b, arms session-0-identical), Iteration 59
 
-**What's running (fresh-load suite, replaces stopped sprint):**
-- 6 reasoning models × {no_defense, ratg} × DTA × N=40 = 480 runs (fresh daemon per model)
-- 3 models × {no_defense, rag_llm_judge_7b} × DTA × N=40 = 240 runs (fills Phase 3)
-- Total: 720 runs. ETA: ~04:00–08:00 SGT Jul 2
+**Fresh-load reasoning models NOT usable as RATG evidence (Iteration 59, per-model reason):**
+- qwq:32b: session-0 arm fork (RATG inert until recall; arm contrast not a defense effect)
+- gpt-oss:20b (80/80): session-0 arm fork (no_defense saves 6 in S0, RATG saves 1); do NOT read the 100%→2.5% as a defense effect
+- qwen3.5:9b: runtime-version misparse, both arms 0%, no vulnerable baseline
+- gpt-oss-safeguard:120b (22/40, no_defense only): Draft-Only shift on Ollama 0.30.11 (~4.5% no_defense ASR vs factorial 100%), no vulnerable baseline. Runtime/environment-dependent, NOT proven version-dependent without a 0.20.6/0.30.11 A/B.
 
-**v4 writing actions (after fresh-load suite completes):**
-1. Add daemon-degradation evaluation artifact paragraph (source: `paper/v4_daemon_artifact.md`) to §3.4
-2. Add RATG section: mechanical models 100%→0%; reasoning models from fresh-load suite results
-3. Add 7B-judge result to §3.2.4 (bounds capability threshold)
-4. Do NOT add BSI §4.7/§4.8 reasoning-class instability claim (retracted — Iteration 55)
-5. Do NOT widen "qwq-specific" scoping (sprint 0% was degradation, not safety)
-6. Delete `paper/v4_daemon_artifact.md` and `paper/v4_draft_additions.md` after integration
-- If partial: most interesting - characterize which models/conditions it works for and why.
+**COMPLETE (Iteration 61, 2026-07-03):**
+- ✅ glm-4.7-flash:bf16 fresh-load RATG: S0-fork, uninterpretable (Iteration 60)
+- ✅ 7B-judge suite: VALID (0/120 malicious-doc flagged, 0/400 total, ASR 100%→100% on qwen2.5:14b + qwen3:32b); 122b uninterpretable (baseline degraded)
+- ✅ 122b arm-order control: falsified 100/0/0/100 prediction; led to full reproducibility investigation
+- ✅ 122b RATG DOWNGRADED (baseline non-reproducible post-reboot, Iteration 61)
+
+**v4 writing actions (DONE, uncommitted in working tree):**
+1. ✅ Daemon-degradation appendix updated: GUI-supervisor/effective-config note, GPU-pressure ruled out, "Fresh-load retests and baseline non-reproducibility" paragraph
+2. ✅ RATG section rewritten: 3 mechanical only, two-part reproducibility validity criterion, 122b excluded, no reasoning-model efficacy claim
+3. ✅ qwq + gpt-oss:20b + 122b/9b/glm contrast documented per model with specific failure reason
+4. ✅ 7B-judge result slotted into §3.2.4 (capability-bound: scaling 1.5B→7B did not detect this payload)
+5. ✅ Methods/reproducibility: effective-config invariant added
+6. ✅ verify_canonical.py: verify_ratg() + verify_judge7b() pass
+7. Do NOT add BSI §4.7/§4.8 reasoning-class instability claim (retracted, Iteration 55)
+8. Do NOT widen "qwq-specific" scoping (sprint 0% was degradation, not safety)
 
 **When sprint Phase 3 (7B judge) completes:**
 - If 7B detects what 1.5B couldn't: revise §3.2.4 to bound the capability threshold. "A 7B judge achieves X% detection vs 0% for 1.5B."
