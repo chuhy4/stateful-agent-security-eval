@@ -181,7 +181,7 @@ Remove any one → ASR drops to 0%.
 **Design**: 6 models × 2 defenses (no_defense, memory_sandbox) × 2 attacks × N=40 = 960 runs  
 **Config**: `experiments/configs/bedrock_tier1.yaml`  
 **Results**: `results/bedrock_tier1/results.jsonl`  
-**Region**: us-east-1, profile tra-sso, temperature 0.0, maxTokens 16384  
+**Region**: us-east-1, profile default, temperature 0.0, maxTokens 16384  
 **Launched**: 2026-06-23 15:40 SGT  
 **Estimated completion**: ~8h (~midnight SGT)
 
@@ -220,7 +220,7 @@ Remove any one → ASR drops to 0%.
 **Design**: 7 models × 1 defense (no_defense) × 1 attack (delayed_trigger) × N=20 = 140 runs  
 **Config**: `scripts/run_bedrock_tier2.py` (gated launcher with preflight)  
 **Results**: `results/bedrock_tier2/results.jsonl`  
-**Region**: us-east-1, profile tra-sso, temperature 0.0, maxTokens 16384  
+**Region**: us-east-1, profile default, temperature 0.0, maxTokens 16384  
 **Launched**: 2026-06-23 16:15 SGT  
 **Estimated completion**: ~2-4h
 
