@@ -1,6 +1,6 @@
 # arXiv Submission Checklist
 
-> **Last updated**: 2026-07-02. Source: `paper/paper.tex`
+> **Last updated**: 2026-07-08. Source: `paper/paper.tex`
 
 ## Current Status
 
