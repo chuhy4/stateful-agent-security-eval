@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import replace
+from unittest.mock import patch
 
 import pytest
 
@@ -85,6 +86,113 @@ def _apply(
         tools=tools,
         thread_id_factory=lambda: next_thread,
     ))
+
+
+def test_prepare_first_session_resets_only_procedural_state(tmp_path):
+    db_path = str(tmp_path / "first-session.db")
+    thread_id = "not-yet-used-thread"
+    tools = {
+        "email": EmailTool(),
+        "memory": MemoryTool(db_path=db_path),
+        "rag": RAGTool(corpus=[
+            RAGDocument(doc_id="retained-source", content="retained fixture")
+        ]),
+        "calendar": CalendarTool(entries=[
+            CalendarEntry(
+                id="event-1",
+                title="Fixture",
+                start="2026-01-01",
+                end="2026-01-01",
+            )
+        ]),
+        "search": SearchTool(response_set=[{"title": "fixture"}]),
+    }
+    try:
+        tools["memory"].save_fact("retained-rule", "retained value")
+        tools["memory"]._ratg_user_message = "previous request"
+        tools["email"].draft_email(["a@example.com"], "subject", "body")
+        tools["email"].send_email(["a@example.com"], "subject", "body")
+        tools["rag"].query("retained fixture")
+        tools["calendar"].get_schedule("2026-01-01")
+        tools["search"].search("fixture")
+        before = capture_state_manifest(db_path, thread_id, thread_id, tools)
+
+        returned = ResetPolicyController().prepare_first_session(tools)
+
+        after = capture_state_manifest(db_path, thread_id, thread_id, tools)
+        assert returned is None
+        assert not before.checkpoint_table_present
+        assert after.checkpoint_table_present == before.checkpoint_table_present
+        assert after.prior_checkpoint_physical_rows == before.prior_checkpoint_physical_rows
+        assert after.active_checkpoint_reachable == before.active_checkpoint_reachable
+        assert after.active_thread_id == before.active_thread_id
+        assert after.prior_thread_id == before.prior_thread_id
+        assert after.canonical_memory == before.canonical_memory
+        assert after.rag_document_ids == before.rag_document_ids
+        assert after.db_canaries == before.db_canaries == ()
+        assert after.evaluator_log_lengths == before.evaluator_log_lengths
+        assert after.email_record_count == 0
+        assert after.session_local_values == (("memory._ratg_user_message", ""),)
+        assert all(
+            value == 0
+            for _tool_name, counters in after.procedural_counters
+            for _counter_name, value in counters
+        )
+    finally:
+        tools["memory"].close()
+
+
+def test_boundary_and_first_session_share_procedural_reset_primitive(
+    seeded_runtime,
+):
+    db_path, tools, _model, _agent, thread_id = seeded_runtime
+    controller = ResetPolicyController()
+
+    with patch.object(
+        controller,
+        "_reset_session_local_state",
+        wraps=controller._reset_session_local_state,
+    ) as shared_reset:
+        before_preparation = capture_state_manifest(
+            db_path, thread_id, thread_id, tools
+        )
+        controller.prepare_first_session(tools)
+        after_preparation = capture_state_manifest(
+            db_path, thread_id, thread_id, tools
+        )
+
+        tools["memory"]._ratg_user_message = "another request"
+        tools["email"].draft_email(["b@example.com"], "subject", "body")
+        tools["email"].send_email(["b@example.com"], "subject", "body")
+        tools["rag"].query("fixture")
+        tools["calendar"].get_schedule("2026-01-01")
+        tools["search"].search("fixture")
+
+        boundary = controller.apply_boundary(BoundaryContext(
+            condition=ResetCondition.C0,
+            db_path=db_path,
+            current_thread_id=thread_id,
+            tools=tools,
+        ))
+
+    assert shared_reset.call_count == 2
+    assert after_preparation.checkpoint_table_present == (
+        before_preparation.checkpoint_table_present
+    )
+    assert after_preparation.prior_checkpoint_physical_rows == (
+        before_preparation.prior_checkpoint_physical_rows
+    )
+    assert after_preparation.active_checkpoint_reachable == (
+        before_preparation.active_checkpoint_reachable
+    )
+    assert boundary.reset_valid
+    assert boundary.post_manifest.procedural_counters == (
+        after_preparation.procedural_counters
+    )
+    assert boundary.post_manifest.session_local_values == (
+        after_preparation.session_local_values
+    )
+    assert boundary.post_manifest.email_record_count == 0
 
 
 def test_c0_conversation_and_memory_retained(seeded_runtime):

@@ -72,6 +72,26 @@ class ResetValidationError(RuntimeError):
 class ResetPolicyController:
     """Apply C0/C1/C2 semantics without invoking a model."""
 
+    def _reset_session_local_state(self, tools: Mapping[str, object]) -> None:
+        """Reset procedural state shared by every reset condition."""
+        for tool in tools.values():
+            reset_call_count = getattr(tool, "reset_call_count", None)
+            if callable(reset_call_count):
+                reset_call_count()
+
+        email = tools.get("email")
+        clear_session_records = getattr(email, "_clear_session_records", None)
+        if callable(clear_session_records):
+            clear_session_records()
+
+        memory = tools.get("memory")
+        if memory is not None and hasattr(memory, "_ratg_user_message"):
+            memory._ratg_user_message = ""
+
+    def prepare_first_session(self, tools: Mapping[str, object]) -> None:
+        """Reset only procedural state before the first model session."""
+        self._reset_session_local_state(tools)
+
     def apply_boundary(self, context: BoundaryContext) -> BoundaryResult:
         condition = ResetCondition(context.condition)
         seed_db_canary(context.db_path)
@@ -83,19 +103,8 @@ class ResetPolicyController:
             tools=context.tools,
         )
 
-        for tool in context.tools.values():
-            reset_call_count = getattr(tool, "reset_call_count", None)
-            if callable(reset_call_count):
-                reset_call_count()
-
-        email = context.tools.get("email")
-        clear_session_records = getattr(email, "_clear_session_records", None)
-        if callable(clear_session_records):
-            clear_session_records()
-
+        self._reset_session_local_state(context.tools)
         memory = context.tools.get("memory")
-        if memory is not None and hasattr(memory, "_ratg_user_message"):
-            memory._ratg_user_message = ""
 
         clear_attempted = False
         canonical_rows_deleted = None

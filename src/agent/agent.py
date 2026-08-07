@@ -6,6 +6,7 @@ import logging
 import os
 import sqlite3
 import time
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -28,6 +29,10 @@ from langgraph.prebuilt import create_react_agent
 from src.agent.model_interface import ChatMessage, ModelInterface
 
 logger = logging.getLogger(__name__)
+
+
+class CheckpointInspectionError(RuntimeError):
+    """Raised before invocation when evaluator log slicing cannot be trusted."""
 
 
 @dataclass
@@ -255,8 +260,52 @@ class Agent:
         
         return base_agent
 
+    def _existing_checkpoint_message_count(self, config: dict) -> int:
+        """Read the authoritative pre-invocation message count for one thread.
+
+        Existing checkpoint history must be an append-style message prefix.  Calls
+        that reuse the same Agent and thread_id must therefore be serialized.
+        """
+        if self.checkpointer is None:
+            return 0
+        try:
+            checkpoint_tuple = self.checkpointer.get_tuple(config)
+            if checkpoint_tuple is None:
+                return 0
+            checkpoint = checkpoint_tuple.checkpoint
+            if not isinstance(checkpoint, Mapping):
+                raise TypeError("checkpoint must be a mapping")
+            if "channel_values" not in checkpoint:
+                raise KeyError("checkpoint is missing channel_values")
+            channel_values = checkpoint["channel_values"]
+            if not isinstance(channel_values, Mapping):
+                raise TypeError("checkpoint channel_values must be a mapping")
+            if "messages" not in channel_values:
+                raise KeyError("checkpoint channel_values is missing messages")
+            messages = channel_values["messages"]
+            if (
+                not isinstance(messages, Sequence)
+                or isinstance(messages, (str, bytes, bytearray))
+            ):
+                raise TypeError("checkpoint messages must be a message sequence")
+            if not all(isinstance(message, BaseMessage) for message in messages):
+                raise TypeError(
+                    "checkpoint messages must contain only BaseMessage values"
+                )
+            return len(messages)
+        except Exception as exc:
+            thread_id = config.get("configurable", {}).get("thread_id", "")
+            raise CheckpointInspectionError(
+                "Unable to inspect checkpoint messages before model invocation "
+                f"for thread_id={thread_id!r}"
+            ) from exc
+
     def run_session(self, thread_id: str, user_message: str) -> tuple[str, dict | None, list[dict]]:
         """Run one session with thread-based timeout protection.
+
+        Calls using the same Agent and thread_id must be serialized. Incremental
+        evaluator-log attribution assumes retained checkpoint messages remain an
+        append-style prefix of the state produced by the next invocation.
         
         Returns: (agent_response, defense_log_dict, agent_logs)
 
@@ -283,12 +332,6 @@ class Agent:
         
         session_start = time.monotonic()
         
-        defense_log_dict = None
-        if self.config.defense is not None:
-            filtered, defense_log = self.config.defense.apply(user_message)
-            user_message = filtered
-            defense_log_dict = defense_log.to_dict()
-
         config = {
             "configurable": {"thread_id": thread_id},
             "recursion_limit": 50,  # Primary loop protection is via tool governor ValueErrors.
@@ -302,14 +345,21 @@ class Agent:
                                     # expect it to take effect; change this line instead.
         }
         
+        # The checkpoint is authoritative for the current thread.  New threads have
+        # no tuple and therefore a zero offset; reused threads retain model-visible
+        # history while evaluator logs below include only this invocation's additions.
+        # Inspection failure is fail-closed before graph.invoke() so attribution is
+        # never silently corrupted by falling back to an incorrect offset.
+        prev_msg_count = self._existing_checkpoint_message_count(config)
+
+        defense_log_dict = None
+        if self.config.defense is not None:
+            filtered, defense_log = self.config.defense.apply(user_message)
+            user_message = filtered
+            defense_log_dict = defense_log.to_dict()
+
         messages = [HumanMessage(content=user_message)]
         logger.debug("Running session with user message (%d chars)", len(user_message))
-        
-        # With per-session thread_id isolation, each graph.invoke() starts a fresh
-        # LangGraph thread — messages list contains only the current session's messages.
-        # prev_msg_count must always be 0; carrying over _last_msg_count from a previous
-        # session (different thread_id) would slice off all messages from this session.
-        prev_msg_count = 0
         
         invoke_start = time.monotonic()
         
@@ -339,7 +389,11 @@ class Agent:
             partial_logs = []
             try:
                 state = self.graph.get_state({"configurable": {"thread_id": thread_id}})
-                for msg in (state.values.get("messages", []) if state and state.values else []):
+                state_messages = (
+                    state.values.get("messages", [])
+                    if state and state.values else []
+                )
+                for msg in state_messages[prev_msg_count:]:
                     if isinstance(msg, HumanMessage):
                         partial_logs.append({"type": "human", "content": str(msg.content)})
                     elif isinstance(msg, AIMessage):
@@ -359,9 +413,8 @@ class Agent:
         
         messages = result.get("messages", [])
         
-        # Extract full message history for mechanistic analysis.
-        # Captures ALL message types (Human, AI, Tool, System) so post-hoc
-        # analysis can reconstruct the full conversation thread per session.
+        # Extract only messages added by this invocation for mechanistic analysis.
+        # The model still receives full checkpoint history when a thread is reused.
         agent_logs = []
         for msg in messages[prev_msg_count:]:
             if isinstance(msg, HumanMessage):
