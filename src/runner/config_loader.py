@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 
 import yaml
 
+from src.runner.reset_policy import ResetCondition
+
 _DATE_PATTERN = re.compile(r"\d{4}-?\d{2}-?\d{2}")
 _OLLAMA_VERSION_PATTERN = re.compile(r":\w")
 
@@ -36,6 +38,28 @@ class ExperimentConfig:
     detection: dict = field(default_factory=dict)
     btcr_criteria: dict = field(default_factory=dict)
     extra: dict = field(default_factory=dict)
+    reset_conditions: list[str] | None = None
+
+
+def normalize_reset_conditions(reset_conditions: object) -> list[str]:
+    """Validate and normalize an explicitly configured reset-policy list."""
+    if not isinstance(reset_conditions, list):
+        raise ValueError("'reset_conditions' must be a non-empty list")
+    if not reset_conditions:
+        raise ValueError("'reset_conditions' must not be empty")
+
+    normalized: list[str] = []
+    for value in reset_conditions:
+        try:
+            normalized.append(ResetCondition(value).value)
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"Invalid reset condition {value!r}; expected one of C0, C1, C2"
+            ) from None
+
+    if len(set(normalized)) != len(normalized):
+        raise ValueError("'reset_conditions' must not contain duplicates")
+    return normalized
 
 
 def validate_config(config_dict: dict) -> list[str]:
@@ -68,6 +92,27 @@ def validate_config(config_dict: dict) -> list[str]:
     comparisons = config_dict.get("comparisons", [])
     if isinstance(comparisons, list) and len(comparisons) == 0:
         errors.append("'comparisons' list must be non-empty")
+
+    # Reset-policy experiments are strictly opt-in.  An absent key or explicit
+    # null leaves legacy validation, including Bedrock support, unchanged.
+    if (
+        "reset_conditions" in config_dict
+        and config_dict["reset_conditions"] is not None
+    ):
+        try:
+            normalized = normalize_reset_conditions(config_dict["reset_conditions"])
+        except ValueError as exc:
+            errors.append(str(exc))
+        else:
+            config_dict["reset_conditions"] = normalized
+            if any(
+                model.get("provider", "").lower() == "bedrock"
+                for model in config_dict.get("models", [])
+            ):
+                errors.append(
+                    "Reset-policy experiments do not support Bedrock because "
+                    "checkpoint state is unavailable"
+                )
 
     return errors
 
@@ -115,7 +160,7 @@ def load_config(path: str) -> ExperimentConfig:
     known = {"attacks", "defenses", "models", "runs_per_condition", "comparisons",
              "effect_size", "alpha", "power", "results_path", "db_base_dir",
              "injection_similarity_threshold", "n_bootstrap", "bootstrap_seed",
-             "detection", "btcr_criteria"}
+             "detection", "btcr_criteria", "reset_conditions"}
     extra = {k: v for k, v in raw.items() if k not in known}
 
     return ExperimentConfig(
@@ -124,6 +169,7 @@ def load_config(path: str) -> ExperimentConfig:
         models=raw["models"],
         runs_per_condition=raw["runs_per_condition"],
         comparisons=comparisons,
+        reset_conditions=raw.get("reset_conditions"),
         effect_size=raw.get("effect_size", 0.10),
         alpha=raw.get("alpha", 0.05),
         power=raw.get("power", 0.80),

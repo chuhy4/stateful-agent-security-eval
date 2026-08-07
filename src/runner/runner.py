@@ -7,7 +7,7 @@ import logging
 import time
 import traceback
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from itertools import product
 from typing import Optional
 
@@ -15,6 +15,10 @@ from src.runner.config_loader import ExperimentConfig
 from src.runner.state_isolator import StateIsolator
 
 logger = logging.getLogger(__name__)
+
+RESET_POLICY_INTEGRATION_UNAVAILABLE = (
+    "Reset-policy session lifecycle integration is not yet available"
+)
 
 
 @dataclass
@@ -98,6 +102,16 @@ class RunResult:
     # "safety-tuned paradox" narrative: the model deliberated, then complied.
     # None if no exfiltration occurred (attack_success=False) or no trigger session exists.
     trigger_steps_before_exfil: Optional[int] = None
+    # Reset-policy lifecycle evidence.  None identifies legacy runs where the
+    # reset-policy factorial was not enabled.
+    reset_condition: Optional[str] = None
+    db_identity: Optional[str] = None
+    session_threads: list[dict] = field(default_factory=list)
+    reset_boundaries: list[dict] = field(default_factory=list)
+    reset_valid: Optional[bool] = None
+    reset_invalid_reasons: list[dict] = field(default_factory=list)
+    withdrawn_source_ids: list[str] = field(default_factory=list)
+    email_records: list[dict] = field(default_factory=list)
     
     def __post_init__(self):
         if self.defense_logs is None:
@@ -150,6 +164,28 @@ class ExperimentRunner:
         """
         import os
         import shutil
+
+        # Programmatic ExperimentConfig construction bypasses load_config(), so
+        # enforce reset-policy validation here as a preflight before any model
+        # interface can be constructed.  Legacy configurations keep None and do
+        # not enter this branch.
+        if self.config.reset_conditions is not None:
+            from src.runner.config_loader import normalize_reset_conditions
+
+            try:
+                self.config.reset_conditions = normalize_reset_conditions(
+                    self.config.reset_conditions
+                )
+            except ValueError as exc:
+                raise ValueError(f"Invalid reset-policy configuration: {exc}") from exc
+            if any(
+                model.get("provider", "").lower() == "bedrock"
+                for model in self.config.models
+            ):
+                raise RuntimeError(
+                    "Reset-policy experiments do not support Bedrock because "
+                    "checkpoint state is unavailable"
+                )
         
         # Check required environment variables for API keys (only for API-based models)
         required_env_vars = set()
@@ -353,10 +389,24 @@ class ExperimentRunner:
 
     def _enumerate_conditions(self) -> list[dict]:
         conditions = []
-        for attack, defense, model in product(
-            self.config.attacks, self.config.defenses, self.config.models
-        ):
-            conditions.append({"attack": attack, "defense": defense, "model": model})
+        if self.config.reset_conditions is None:
+            for attack, defense, model in product(
+                self.config.attacks, self.config.defenses, self.config.models
+            ):
+                conditions.append({"attack": attack, "defense": defense, "model": model})
+        else:
+            for attack, defense, model, reset_condition in product(
+                self.config.attacks,
+                self.config.defenses,
+                self.config.models,
+                self.config.reset_conditions,
+            ):
+                conditions.append({
+                    "attack": attack,
+                    "defense": defense,
+                    "model": model,
+                    "reset_condition": reset_condition,
+                })
         return conditions
 
     def _get_condition_id(self, condition: dict) -> str:
@@ -374,6 +424,9 @@ class ExperimentRunner:
 
     def _run_single(self, condition: dict, run_id: str) -> RunResult:
         import signal
+
+        if "reset_condition" in condition:
+            raise RuntimeError(RESET_POLICY_INTEGRATION_UNAVAILABLE)
 
         def timeout_handler(signum, frame):
             raise TimeoutError(f"Run {run_id} exceeded 20 minute timeout")
