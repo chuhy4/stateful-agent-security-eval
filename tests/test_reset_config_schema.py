@@ -15,11 +15,7 @@ from src.runner.config_loader import (
     load_config,
     validate_config,
 )
-from src.runner.runner import (
-    RESET_POLICY_INTEGRATION_UNAVAILABLE,
-    ExperimentRunner,
-    RunResult,
-)
+from src.runner.runner import ExperimentRunner, RunResult
 
 
 def _config(tmp_path, *, reset_conditions=None, models=None) -> ExperimentConfig:
@@ -225,11 +221,23 @@ def test_reset_conditions_expand_factorial_exactly_threefold(tmp_path):
     assert len({reset_runner._get_condition_id(condition) for condition in same_base}) == 3
 
 
-def test_reset_condition_execution_fails_closed_before_runtime_construction(tmp_path):
+def test_reset_condition_execution_dispatches_to_integrated_runner(tmp_path):
     runner = ExperimentRunner(
         _config(tmp_path, reset_conditions=["C0", "C1", "C2"])
     )
     condition = runner._enumerate_conditions()[0]
+    expected = _reset_result(condition)
+
+    with patch.object(runner, "_run_single_impl", return_value=expected) as run_impl:
+        result = runner._run_single(condition, "integrated-reset-run")
+
+    assert result is expected
+    run_impl.assert_called_once()
+
+
+def test_invalid_direct_reset_condition_fails_before_runtime_construction(tmp_path):
+    runner = ExperimentRunner(_config(tmp_path))
+    condition = runner._enumerate_conditions()[0] | {"reset_condition": "C9"}
 
     with (
         patch.object(runner, "_run_single_impl") as run_impl,
@@ -237,10 +245,8 @@ def test_reset_condition_execution_fails_closed_before_runtime_construction(tmp_
         patch.object(runner, "_build_attack") as build_attack,
         patch.object(runner.state_isolator, "create_fresh_state") as create_state,
     ):
-        with pytest.raises(
-            RuntimeError, match=RESET_POLICY_INTEGRATION_UNAVAILABLE
-        ):
-            runner._run_single(condition, "blocked-reset-run")
+        with pytest.raises(ValueError, match="C9"):
+            runner._run_single(condition, "invalid-reset-run")
 
     run_impl.assert_not_called()
     build_model.assert_not_called()
@@ -297,6 +303,28 @@ def test_reset_with_bedrock_fails_before_model_construction(tmp_path):
                 )
             )
     build_model.assert_not_called()
+
+
+def test_direct_reset_bedrock_condition_fails_before_runtime_construction(tmp_path):
+    runner = ExperimentRunner(_config(
+        tmp_path,
+        models=[{"provider": "bedrock", "model_name": "test-model"}],
+    ))
+    condition = runner._enumerate_conditions()[0] | {"reset_condition": "C1"}
+
+    with (
+        patch.object(runner, "_run_single_impl") as run_impl,
+        patch.object(runner, "_build_model") as build_model,
+        patch.object(runner, "_build_attack") as build_attack,
+        patch.object(runner.state_isolator, "create_fresh_state") as create_state,
+    ):
+        with pytest.raises(RuntimeError, match="do not support Bedrock"):
+            runner._run_single(condition, "direct-reset-bedrock")
+
+    run_impl.assert_not_called()
+    build_model.assert_not_called()
+    build_attack.assert_not_called()
+    create_state.assert_not_called()
 
 
 def test_legacy_bedrock_remains_valid(tmp_path):

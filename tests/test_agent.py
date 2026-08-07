@@ -16,8 +16,14 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 from langchain_core.messages import HumanMessage
 
-from src.agent.agent import Agent, AgentConfig, CheckpointInspectionError
+from src.agent.agent import (
+    Agent,
+    AgentConfig,
+    CheckpointInspectionError,
+    SessionExecutionStatus,
+)
 from src.agent.model_interface import ChatMessage, ChatResponse, ModelInterface
+from src.tools.rag_tool import RAGTool
 from src.tools.search_tool import SearchTool
 
 
@@ -151,6 +157,61 @@ def test_run_session_returns_string():
         assert len(response) > 0
     finally:
         os.unlink(db_path)
+
+
+def test_reset_agent_excludes_rag_write_while_legacy_inventory_is_unchanged(
+    tmp_path,
+):
+    legacy = Agent(AgentConfig(
+        model=MockModel(),
+        db_path=str(tmp_path / "legacy-rag-tools.db"),
+        tools={"rag": RAGTool()},
+    ))
+    reset = Agent(AgentConfig(
+        model=MockModel(),
+        db_path=str(tmp_path / "reset-rag-tools.db"),
+        tools={"rag": RAGTool()},
+        reset_mode=True,
+    ))
+    try:
+        legacy_names = {tool.name for tool in legacy._lc_tools}
+        reset_names = {tool.name for tool in reset._lc_tools}
+
+        assert "rag_inject_document" in legacy_names
+        assert "rag_query" in legacy_names
+        assert "rag_inject_document" not in reset_names
+        assert "rag_query" in reset_names
+        assert reset.effective_excluded_tools == {"rag_inject_document"}
+    finally:
+        legacy.close()
+        reset.close()
+
+
+def test_reset_session_reports_non_provider_graph_failure(tmp_path):
+    model = MockModel()
+    agent = Agent(AgentConfig(
+        model=model,
+        db_path=str(tmp_path / "reset-graph-failure.db"),
+        tools={},
+        reset_mode=True,
+    ))
+    try:
+        with patch.object(
+            agent.graph,
+            "invoke",
+            side_effect=RuntimeError("graph machinery failed"),
+        ):
+            outcome = agent.run_session_reset(
+                "graph-failure-thread", "current request"
+            )
+
+        assert outcome.status is SessionExecutionStatus.GRAPH_FAILURE
+        assert isinstance(outcome.error, RuntimeError)
+        assert str(outcome.error) == "graph machinery failed"
+        assert outcome.confirmed_oom is False
+        assert outcome.completed is False
+    finally:
+        agent.close()
 
 
 def test_same_thread_retains_model_history_but_returns_incremental_agent_logs():

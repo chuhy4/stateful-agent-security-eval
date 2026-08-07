@@ -8,6 +8,7 @@ import sqlite3
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any
 
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -35,6 +36,90 @@ class CheckpointInspectionError(RuntimeError):
     """Raised before invocation when evaluator log slicing cannot be trusted."""
 
 
+class SessionExecutionStatus(str, Enum):
+    """Reset-only classification of one Agent invocation."""
+
+    COMPLETED = "completed"
+    TIMEOUT = "timeout"
+    MODEL_PROVIDER_FAILURE = "model_provider_failure"
+    GRAPH_FAILURE = "graph_failure"
+    CHECKPOINT_INSPECTION_FAILURE = "checkpoint_inspection_failure"
+
+
+@dataclass(frozen=True)
+class SessionExecutionOutcome:
+    """Structured reset-mode outcome without changing the legacy tuple API."""
+
+    status: SessionExecutionStatus
+    response: str = ""
+    defense_log: dict | None = None
+    agent_logs: tuple[dict, ...] = ()
+    error: BaseException | None = None
+    confirmed_oom: bool = False
+
+    @property
+    def completed(self) -> bool:
+        return self.status is SessionExecutionStatus.COMPLETED
+
+
+class _ModelProviderInvocationError(RuntimeError):
+    """Marks an exception as originating inside ModelInterface.chat()."""
+
+    def __init__(self, original: BaseException) -> None:
+        self.original = original
+        self.confirmed_oom = _is_resource_exhaustion_error(original)
+        super().__init__(str(original))
+
+
+def _is_resource_exhaustion_error(exc: BaseException) -> bool:
+    """Classify resource exhaustion without treating an HTTP 500 alone as OOM."""
+    if isinstance(exc, MemoryError):
+        return True
+    parts = [type(exc).__name__, str(exc)]
+    code = getattr(exc, "code", None)
+    try:
+        code_value = code() if callable(code) else code
+    except Exception:
+        code_value = None
+    if code_value is not None:
+        parts.append(str(code_value))
+    text = " ".join(parts).lower().replace("_", " ")
+    return any(marker in text for marker in (
+        "out of memory",
+        "resource exhausted",
+        "resource exhaustion",
+        "insufficient memory",
+        "not enough memory",
+        "requires more system memory",
+        "cannot allocate memory",
+        "cuda oom",
+    ))
+
+
+def _find_model_provider_failure(
+    exc: BaseException,
+) -> _ModelProviderInvocationError | None:
+    """Find the model-origin marker even if graph execution wrapped it."""
+    pending = [exc]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, _ModelProviderInvocationError):
+            return current
+        for linked in (current.__cause__, current.__context__):
+            if isinstance(linked, BaseException):
+                pending.append(linked)
+        nested = getattr(current, "exceptions", ())
+        if isinstance(nested, Sequence):
+            pending.extend(
+                item for item in nested if isinstance(item, BaseException)
+            )
+    return None
+
+
 @dataclass
 class AgentConfig:
     model: ModelInterface
@@ -44,6 +129,7 @@ class AgentConfig:
     system_prompt: str = ""
     model_provider: str = "ollama"  # Provider type: "ollama", "bedrock", "openai", etc.
     excluded_tools: set | None = None  # Tool keys to exclude (e.g. {"memory_recall_fact"} for memory_sandbox)
+    reset_mode: bool = False  # Enables reset-only structured execution and RAG write exclusion
 
 
 # Stop-reason tracking is handled at the ModelInterface layer (BedrockInterface.stop_reasons).
@@ -55,6 +141,7 @@ class _LangChainModelWrapper(BaseChatModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
     model_interface: Any  # ModelInterface instance
+    capture_provider_failures: bool = False
 
     @property
     def _llm_type(self) -> str:
@@ -112,7 +199,12 @@ class _LangChainModelWrapper(BaseChatModel):
                     }
                 })
 
-        response = self.model_interface.chat(chat_messages, tools=tool_schemas)
+        try:
+            response = self.model_interface.chat(chat_messages, tools=tool_schemas)
+        except Exception as exc:
+            if self.capture_provider_failures:
+                raise _ModelProviderInvocationError(exc) from exc
+            raise
         
         # Log tool calls for debugging agent loops
         if response.tool_calls:
@@ -153,7 +245,10 @@ class _LangChainModelWrapper(BaseChatModel):
 
     def bind_tools(self, tools: list, **kwargs: Any) -> "_LangChainModelWrapper":
         # Store tools for schema generation; return self (tools handled by LangGraph)
-        clone = self.__class__(model_interface=self.model_interface)
+        clone = self.__class__(
+            model_interface=self.model_interface,
+            capture_provider_failures=self.capture_provider_failures,
+        )
         object.__setattr__(clone, "_bound_tools", tools)
         return clone
 
@@ -235,8 +330,20 @@ class Agent:
         else:
             self.checkpointer = SqliteSaver(self._conn)
         
-        self._lc_model = _LangChainModelWrapper(model_interface=config.model)
-        self._lc_tools = _make_lc_tools(config.tools, excluded_tools=config.excluded_tools)
+        self._lc_model = _LangChainModelWrapper(
+            model_interface=config.model,
+            capture_provider_failures=config.reset_mode,
+        )
+        self.effective_excluded_tools = set(config.excluded_tools or ())
+        if config.reset_mode:
+            # Attack setup retains direct access to RAGTool.inject_document(), but
+            # reset-policy model invocations must not be able to recreate sources
+            # after the evaluator withdraws them.
+            self.effective_excluded_tools.add("rag_inject_document")
+        self._lc_tools = _make_lc_tools(
+            config.tools,
+            excluded_tools=self.effective_excluded_tools,
+        )
         self.graph = self._build_graph()
 
     def _build_graph(self):
@@ -300,14 +407,95 @@ class Agent:
                 f"for thread_id={thread_id!r}"
             ) from exc
 
-    def run_session(self, thread_id: str, user_message: str) -> tuple[str, dict | None, list[dict]]:
+    def run_session(
+        self,
+        thread_id: str,
+        user_message: str,
+    ) -> tuple[str, dict | None, list[dict]]:
+        """Run one legacy session and preserve the historical tuple contract."""
+        outcome = self._run_session_outcome(thread_id, user_message)
+        if outcome.status is SessionExecutionStatus.TIMEOUT:
+            # Legacy callers historically received only this marker on timeout.
+            return "", outcome.defense_log, [
+                {"type": "timeout", "reason": "Session exceeded 600s timeout"}
+            ]
+        return outcome.response, outcome.defense_log, list(outcome.agent_logs)
+
+    def run_session_reset(
+        self,
+        thread_id: str,
+        user_message: str,
+    ) -> SessionExecutionOutcome:
+        """Run one reset-policy session with a fail-closed structured outcome."""
+        if not self.config.reset_mode:
+            raise RuntimeError(
+                "run_session_reset() requires AgentConfig(reset_mode=True)"
+            )
+        try:
+            return self._run_session_outcome(thread_id, user_message)
+        except CheckpointInspectionError as exc:
+            return SessionExecutionOutcome(
+                status=SessionExecutionStatus.CHECKPOINT_INSPECTION_FAILURE,
+                error=exc,
+            )
+
+    def _recover_partial_agent_logs(
+        self,
+        *,
+        thread_id: str,
+        previous_message_count: int,
+    ) -> list[dict]:
+        """Best-effort recovery of only this invocation's checkpoint evidence."""
+        partial_logs: list[dict] = []
+        try:
+            state = self.graph.get_state(
+                {"configurable": {"thread_id": thread_id}}
+            )
+            state_messages = (
+                state.values.get("messages", [])
+                if state and state.values else []
+            )
+            for msg in state_messages[previous_message_count:]:
+                if isinstance(msg, HumanMessage):
+                    partial_logs.append(
+                        {"type": "human", "content": str(msg.content)}
+                    )
+                elif isinstance(msg, AIMessage):
+                    if msg.content:
+                        partial_logs.append(
+                            {"type": "reasoning", "content": str(msg.content)}
+                        )
+                    if hasattr(msg, "tool_calls") and msg.tool_calls:
+                        for tool_call in msg.tool_calls:
+                            partial_logs.append({
+                                "type": "tool_call",
+                                "tool_name": tool_call.get("name", "unknown"),
+                                "tool_args": str(tool_call.get("args", {})),
+                            })
+                elif isinstance(msg, ToolMessage):
+                    partial_logs.append({
+                        "type": "tool_output",
+                        "tool_call_id": getattr(msg, "tool_call_id", ""),
+                        "content": str(msg.content)[:1000],
+                    })
+        except Exception:
+            # Recovery is evaluator-only and must not mask the invocation failure.
+            pass
+        return partial_logs
+
+    def _run_session_outcome(
+        self,
+        thread_id: str,
+        user_message: str,
+    ) -> SessionExecutionOutcome:
         """Run one session with thread-based timeout protection.
 
         Calls using the same Agent and thread_id must be serialized. Incremental
         evaluator-log attribution assumes retained checkpoint messages remain an
         append-style prefix of the state produced by the next invocation.
         
-        Returns: (agent_response, defense_log_dict, agent_logs)
+        Returns a structured outcome. ``run_session()`` adapts it to the legacy
+        ``(agent_response, defense_log_dict, agent_logs)`` tuple.
 
         CRITICAL: Defenses are applied to user input ONLY.
         They do NOT filter:
@@ -379,34 +567,46 @@ class Agent:
         except FuturesTimeoutError:
             invoke_elapsed = time.monotonic() - invoke_start
             logger.warning("Session timed out after %.2fs (600s limit)", invoke_elapsed)
-            return "", defense_log_dict, [{"type": "timeout", "reason": "Session exceeded 600s timeout"}]
+            partial_logs = self._recover_partial_agent_logs(
+                thread_id=thread_id,
+                previous_message_count=prev_msg_count,
+            )
+            partial_logs.append({
+                "type": "timeout",
+                "reason": "Session exceeded 600s timeout",
+            })
+            return SessionExecutionOutcome(
+                status=SessionExecutionStatus.TIMEOUT,
+                defense_log=defense_log_dict,
+                agent_logs=tuple(partial_logs),
+                error=TimeoutError("Session exceeded 600s timeout"),
+            )
         except Exception as e:
             invoke_elapsed = time.monotonic() - invoke_start
             logger.warning("Agent graph.invoke() failed: %s", str(e)[:500])
             logger.info("Agent graph.invoke() took %.2fs (failed)", invoke_elapsed)
             # Attempt to recover partial agent_logs from graph state even on failure.
             # Recursion limit errors leave the graph state intact — messages are accessible.
-            partial_logs = []
-            try:
-                state = self.graph.get_state({"configurable": {"thread_id": thread_id}})
-                state_messages = (
-                    state.values.get("messages", [])
-                    if state and state.values else []
-                )
-                for msg in state_messages[prev_msg_count:]:
-                    if isinstance(msg, HumanMessage):
-                        partial_logs.append({"type": "human", "content": str(msg.content)})
-                    elif isinstance(msg, AIMessage):
-                        if msg.content:
-                            partial_logs.append({"type": "reasoning", "content": str(msg.content)})
-                        if hasattr(msg, "tool_calls") and msg.tool_calls:
-                            for tc in msg.tool_calls:
-                                partial_logs.append({"type": "tool_call", "tool_name": tc.get("name", "unknown"), "tool_args": str(tc.get("args", {}))})
-                    elif isinstance(msg, ToolMessage):
-                        partial_logs.append({"type": "tool_output", "tool_call_id": getattr(msg, "tool_call_id", ""), "content": str(msg.content)[:1000]})
-            except Exception:
-                pass
-            return "", defense_log_dict, partial_logs
+            partial_logs = self._recover_partial_agent_logs(
+                thread_id=thread_id,
+                previous_message_count=prev_msg_count,
+            )
+            provider_failure = _find_model_provider_failure(e)
+            if provider_failure is not None:
+                status = SessionExecutionStatus.MODEL_PROVIDER_FAILURE
+                error = provider_failure.original
+                confirmed_oom = provider_failure.confirmed_oom
+            else:
+                status = SessionExecutionStatus.GRAPH_FAILURE
+                error = e
+                confirmed_oom = False
+            return SessionExecutionOutcome(
+                status=status,
+                defense_log=defense_log_dict,
+                agent_logs=tuple(partial_logs),
+                error=error,
+                confirmed_oom=confirmed_oom,
+            )
         
         invoke_elapsed = time.monotonic() - invoke_start
         logger.info("Agent graph.invoke() took %.2fs", invoke_elapsed)
@@ -457,8 +657,17 @@ class Agent:
         # Return last AI message content
         for msg in reversed(messages):
             if isinstance(msg, AIMessage) and msg.content:
-                return str(msg.content), defense_log_dict, agent_logs
-        return "", defense_log_dict, agent_logs
+                return SessionExecutionOutcome(
+                    status=SessionExecutionStatus.COMPLETED,
+                    response=str(msg.content),
+                    defense_log=defense_log_dict,
+                    agent_logs=tuple(agent_logs),
+                )
+        return SessionExecutionOutcome(
+            status=SessionExecutionStatus.COMPLETED,
+            defense_log=defense_log_dict,
+            agent_logs=tuple(agent_logs),
+        )
 
     def close(self) -> None:
         """Explicitly close SQLite connection to prevent file descriptor leaks."""
