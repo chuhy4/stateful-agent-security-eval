@@ -6,6 +6,7 @@ import os
 import tempfile
 import uuid
 from dataclasses import asdict
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from hypothesis import HealthCheck, given, settings
@@ -62,10 +63,140 @@ def _minimal_config(n_attacks=2, n_defenses=2, n_models=2, runs_per=3) -> Experi
     )
 
 
+def _runner_with_tmpdb(tmp_path: Path) -> ExperimentRunner:
+    config = _minimal_config(n_attacks=1, n_defenses=1, n_models=1, runs_per=1)
+    config.db_base_dir = str(tmp_path)
+    return ExperimentRunner(config)
+
+
+def _minimal_result(run_id: str, condition: dict) -> RunResult:
+    return RunResult(
+        run_id=run_id,
+        condition=condition,
+        attack_success=False,
+        btcr_success=True,
+        btcr_mean_session=1.0,
+        injection_success=False,
+        tool_logs=[],
+        timing_ms=1.0,
+        temperature_used=0.0,
+    )
+
+
+def _seed_cleanup_resources(runner, db_paths, runtime_refs):
+    db_path = runner.state_isolator.create_fresh_state()
+    db_paths.append(db_path)
+    memory = MemoryTool(db_path=db_path)
+    memory.save_fact(key="cleanup", value="required")
+    memory.close = MagicMock(wraps=memory.close)
+    agent = MagicMock()
+    runtime_refs["memory"] = memory
+    runtime_refs["agent"] = agent
+    return db_path, agent, memory
+
+
+def test_run_single_finally_cleans_resources_on_success(tmp_path):
+    runner = _runner_with_tmpdb(tmp_path)
+    condition = {"attack": {}, "defense": {}, "model": {}}
+    captured = {}
+
+    def fake_impl(condition, run_id, db_paths, runtime_refs):
+        db_path, agent, memory = _seed_cleanup_resources(runner, db_paths, runtime_refs)
+        captured.update(db_path=db_path, agent=agent, memory=memory)
+        return _minimal_result(run_id, condition)
+
+    with patch.object(runner, "_run_single_impl", side_effect=fake_impl):
+        result = runner._run_single(condition, "success-run")
+
+    assert result.run_id == "success-run"
+    captured["agent"].close.assert_called_once_with()
+    captured["memory"].close.assert_called_once_with()
+    for suffix in ("", "-wal", "-shm"):
+        assert not os.path.exists(captured["db_path"] + suffix)
+
+
+def test_run_single_finally_cleans_resources_on_exception(tmp_path):
+    import pytest
+
+    runner = _runner_with_tmpdb(tmp_path)
+    condition = {"attack": {}, "defense": {}, "model": {}}
+    captured = {}
+
+    def fake_impl(condition, run_id, db_paths, runtime_refs):
+        db_path, agent, memory = _seed_cleanup_resources(runner, db_paths, runtime_refs)
+        captured.update(db_path=db_path, agent=agent, memory=memory)
+        raise RuntimeError("injected failure")
+
+    with patch.object(runner, "_run_single_impl", side_effect=fake_impl):
+        with pytest.raises(RuntimeError, match="injected failure"):
+            runner._run_single(condition, "error-run")
+
+    captured["agent"].close.assert_called_once_with()
+    captured["memory"].close.assert_called_once_with()
+    for suffix in ("", "-wal", "-shm"):
+        assert not os.path.exists(captured["db_path"] + suffix)
+
+
+def test_retry_uses_fresh_database_and_cleans_all_attempts(tmp_path):
+    runner = _runner_with_tmpdb(tmp_path)
+    condition = {
+        "attack": {"type": "no_attack", "benign_queries": ["hello"]},
+        "defense": {"type": "none"},
+        "model": {"provider": "bedrock", "model_name": "test-model"},
+    }
+    created_paths = []
+    original_create = runner.state_isolator.create_fresh_state
+
+    def recording_create():
+        path = original_create()
+        created_paths.append(path)
+        return path
+
+    with (
+        patch.object(runner.state_isolator, "create_fresh_state", side_effect=recording_create),
+        patch.object(
+            runner,
+            "_build_model",
+            side_effect=[RuntimeError("out of memory"), RuntimeError("terminal failure")],
+        ),
+        patch("src.runner.runner.time.sleep"),
+    ):
+        result = runner._run_single(condition, "retry-run")
+
+    assert result.error == "terminal failure"
+    assert len(created_paths) == 2
+    assert created_paths[0] != created_paths[1]
+    for db_path in created_paths:
+        for suffix in ("", "-wal", "-shm"):
+            assert not os.path.exists(db_path + suffix)
+
+
+def test_constructor_loaded_tool_fixtures_survive_initialization(tmp_path):
+    runner = _runner_with_tmpdb(tmp_path)
+    condition = {
+        "attack": {"type": "no_attack", "benign_queries": ["hello"]},
+        "defense": {"type": "none"},
+        "model": {"provider": "bedrock", "model_name": "test-model"},
+    }
+    observed = {}
+
+    def inspect_tools(_attack_cfg, tools):
+        observed["calendar_entries"] = len(tools["calendar"].entries)
+        observed["search_results"] = len(tools["search"].response_set)
+        raise RuntimeError("fixture inspection complete")
+
+    with patch.object(runner, "_build_attack", side_effect=inspect_tools):
+        result = runner._run_single(condition, "fixture-run")
+
+    assert result.error == "fixture inspection complete"
+    assert observed["calendar_entries"] > 0
+    assert observed["search_results"] > 0
+
+
 # ── Property 20: Inter-run state isolation ────────────────────────────────────
 
 @given(st.integers(min_value=2, max_value=5))
-@settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
+@settings(max_examples=100, deadline=None, suppress_health_check=[HealthCheck.too_slow])
 def test_property_20_inter_run_state_isolation(n_runs):
     """
     **Validates: Requirements 9.9**

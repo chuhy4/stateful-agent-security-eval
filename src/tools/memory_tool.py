@@ -10,6 +10,8 @@ class MemoryTool(InstrumentedTool):
         super().__init__()
         self.db_path = db_path
         self._local = threading.local()
+        self._connections: list[sqlite3.Connection] = []
+        self._connections_lock = threading.Lock()
         self._save_call_count: int = 0
         self._list_call_count: int = 0
         self._counter_lock = threading.Lock()
@@ -31,6 +33,8 @@ class MemoryTool(InstrumentedTool):
         if not hasattr(self._local, 'conn') or self._local.conn is None:
             self._local.conn = sqlite3.connect(self.db_path, check_same_thread=False, timeout=10.0)
             self._local.conn.isolation_level = None  # Autocommit mode
+            with self._connections_lock:
+                self._connections.append(self._local.conn)
         return self._local.conn
 
     def _init_table(self) -> None:
@@ -181,12 +185,33 @@ class MemoryTool(InstrumentedTool):
             self._save_call_count = 0
             self._list_call_count = 0
 
+    def _clear_canonical_facts(self) -> int:
+        """Delete agent-visible facts without dropping shared SQLite tables."""
+        conn = self._get_conn()
+        cursor = conn.execute(
+            "DELETE FROM memory_facts WHERE user_id = ?", (self._CANONICAL_USER,)
+        )
+        return cursor.rowcount
+
+    def close(self) -> None:
+        """Close all connections after tool activity has quiesced.
+
+        This is a terminal lifecycle operation, not a concurrent runtime API.
+        """
+        with self._connections_lock:
+            connections = list(self._connections)
+            self._connections.clear()
+        for conn in connections:
+            try:
+                conn.close()
+            except sqlite3.Error:
+                pass
+        self._local.conn = None
+
     def reset(self) -> None:
         conn = self._get_conn()
         conn.execute("DROP TABLE IF EXISTS memory_facts")
-        if hasattr(self._local, 'conn') and self._local.conn:
-            self._local.conn.close()
-        self._local.conn = None
+        self.close()
         self._save_call_count = 0
         self._list_call_count = 0
         self._init_table()

@@ -6,8 +6,11 @@ Property 3: Memory_Tool Cross-Session Round-Trip (Task 2.7)
 Property 5: Tool Configured Data Retrieval (Task 2.8)
 """
 import os
+import sqlite3
 import tempfile
+import threading
 
+import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
@@ -17,6 +20,139 @@ from src.tools.memory_tool import MemoryTool
 from src.tools.rag_tool import RAGDocument, RAGTool
 from src.tools.search_tool import SearchTool
 from tests.strategies import non_empty_text, user_ids
+
+
+def test_memory_internal_lifecycle_helpers():
+    """Canonical facts can be cleared without deleting reserved DB rows."""
+    db_path = tempfile.mktemp(suffix=".db")
+    tool = MemoryTool(db_path=db_path)
+    try:
+        tool.save_fact(key="visible", value="agent-visible")
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "INSERT INTO memory_facts (user_id, key, value, created_at) VALUES (?, ?, ?, ?)",
+            ("__reset_probe__", "db_canary", "present", 0.0),
+        )
+        conn.commit()
+        conn.close()
+
+        assert tool._clear_canonical_facts() == 1
+        assert tool.recall_fact("visible") == {"value": ""}
+
+        check = sqlite3.connect(db_path)
+        row = check.execute(
+            "SELECT value FROM memory_facts WHERE user_id = ? AND key = ?",
+            ("__reset_probe__", "db_canary"),
+        ).fetchone()
+        check.close()
+        assert row == ("present",)
+
+        active_conn = tool._get_conn()
+        tool.close()
+        with pytest.raises(sqlite3.ProgrammingError):
+            active_conn.execute("SELECT 1")
+    finally:
+        tool.close()
+        for suffix in ("", "-wal", "-shm"):
+            path = db_path + suffix
+            if os.path.exists(path):
+                os.remove(path)
+
+
+def test_memory_close_closes_quiescent_worker_connection():
+    """Terminal close handles worker connections after all worker use has stopped."""
+    db_path = tempfile.mktemp(suffix=".db")
+    tool = MemoryTool(db_path=db_path)
+    worker_state = {}
+
+    def use_memory_from_worker():
+        conn = tool._get_conn()
+        conn.execute("SELECT 1").fetchone()
+        worker_state["conn"] = conn
+
+    try:
+        worker = threading.Thread(target=use_memory_from_worker)
+        worker.start()
+        worker.join()
+        assert not worker.is_alive()
+
+        # close() is only supported once callers are quiescent; it is not a
+        # concurrent runtime operation and the tool is not used after this call.
+        tool.close()
+
+        with pytest.raises(sqlite3.ProgrammingError):
+            worker_state["conn"].execute("SELECT 1")
+    finally:
+        tool.close()
+        for suffix in ("", "-wal", "-shm"):
+            path = db_path + suffix
+            if os.path.exists(path):
+                os.remove(path)
+
+
+def test_email_internal_session_clear_preserves_evaluator_log():
+    """Session records clear independently of evaluator-only logs."""
+    tool = EmailTool()
+    tool.draft_email(["a@example.com"], "subject", "body")
+    tool.send_email(["a@example.com"], "subject", "body")
+
+    tool._clear_session_records()
+    assert tool.get_emails() == []
+    assert len(tool.get_log()) == 2
+
+
+def test_email_reset_resets_send_counter():
+    """A full reset restores the per-session send allowance."""
+    tool = EmailTool()
+    for index in range(3):
+        tool.send_email(["a@example.com"], f"subject-{index}", "body")
+
+    tool.reset()
+    assert tool._send_call_count == 0
+    assert tool.get_log() == []
+    assert tool.send_email(["a@example.com"], "after-reset", "body")["status"] == "sent"
+
+
+def test_rag_internal_remove_documents_is_not_an_agent_tool():
+    """Internal source withdrawal removes only requested IDs and stays private."""
+    tool = RAGTool(corpus=[
+        RAGDocument(doc_id="malicious", content="bad"),
+        RAGDocument(doc_id="benign", content="good"),
+    ])
+
+    assert tool._remove_documents({"malicious"}) == ["malicious"]
+    assert [doc.doc_id for doc in tool.corpus] == ["benign"]
+    agent_visible_methods = {
+        name
+        for name in dir(tool)
+        if not name.startswith("_") and callable(getattr(tool, name))
+    }
+    assert "_remove_documents" not in agent_visible_methods
+
+
+def test_internal_lifecycle_helpers_are_not_registered_as_agent_tools(tmp_path):
+    """The real registration path excludes lifecycle and reset-only helpers."""
+    from src.agent.agent import _make_lc_tools
+
+    memory = MemoryTool(db_path=str(tmp_path / "registration.db"))
+    try:
+        registered_names = {
+            tool.name
+            for tool in _make_lc_tools({
+                "memory": memory,
+                "email": EmailTool(),
+                "rag": RAGTool(),
+            })
+        }
+    finally:
+        memory.close()
+
+    assert {
+        "memory_close",
+        "memory__clear_canonical_facts",
+        "email__clear_session_records",
+        "rag__remove_documents",
+    }.isdisjoint(registered_names)
 
 # ---------------------------------------------------------------------------
 # Property 4: Tool Operation Logging Invariant

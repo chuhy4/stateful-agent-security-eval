@@ -374,16 +374,41 @@ class ExperimentRunner:
 
     def _run_single(self, condition: dict, run_id: str) -> RunResult:
         import signal
-        
+
         def timeout_handler(signum, frame):
             raise TimeoutError(f"Run {run_id} exceeded 20 minute timeout")
-        
+
         # Set run-level timeout — must exceed 4 sessions × 600s session timeout.
         # signal.alarm is the backstop for hangs that bypass the thread timeout.
         signal.signal(signal.SIGALRM, timeout_handler)
         signal.alarm(2700)  # 45 minutes (4 × 600s + 5min buffer)
-        
-        db_path = self.state_isolator.create_fresh_state()
+
+        db_paths: list[str] = []
+        runtime_refs: dict[str, object | None] = {"agent": None, "memory": None}
+        try:
+            return self._run_single_impl(condition, run_id, db_paths, runtime_refs)
+        finally:
+            signal.alarm(0)
+            try:
+                agent = runtime_refs.get("agent")
+                if agent is not None:
+                    agent.close()
+            finally:
+                try:
+                    memory = runtime_refs.get("memory")
+                    if memory is not None:
+                        memory.close()
+                finally:
+                    for db_path in db_paths:
+                        self.state_isolator.cleanup(db_path)
+
+    def _run_single_impl(
+        self,
+        condition: dict,
+        run_id: str,
+        db_paths: list[str],
+        runtime_refs: dict[str, object | None],
+    ) -> RunResult:
         start = time.monotonic()
         run_timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         agent = None
@@ -393,8 +418,16 @@ class ExperimentRunner:
         judge_model_hash: Optional[str] = None  # set below if rag_llm_judge; None for all other conditions
         agent_model_hash: Optional[str] = None  # set below for all Ollama runs; None for API providers
         ollama_version: Optional[str] = None
+        model_cfg = condition.get("model", {})
+        bedrock_model_id: Optional[str] = None
+        bedrock_region: Optional[str] = None
+        bedrock_inference_profile: Optional[str] = None
         
         while retry_count <= max_retries:
+            db_path = self.state_isolator.create_fresh_state()
+            db_paths.append(db_path)
+            runtime_refs["agent"] = None
+            runtime_refs["memory"] = None
             try:
                 # Build fresh tools
                 from src.tools.calendar_tool import CalendarEntry, CalendarTool
@@ -444,8 +477,7 @@ class ExperimentRunner:
                     "calendar": CalendarTool(entries=_calendar_entries),
                     "search": SearchTool(response_set=_flat_results),
                 }
-
-                self.state_isolator.reset_tools(tools)
+                runtime_refs["memory"] = tools["memory"]
 
                 # Build attack scenario
                 attack_cfg = condition["attack"]
@@ -525,9 +557,6 @@ class ExperimentRunner:
                     logger.debug("Agent model digest (%s): %s, engine: %s", model_cfg["model_name"], agent_model_hash, ollama_version)
 
                 # Bedrock metadata capture
-                bedrock_model_id: Optional[str] = None
-                bedrock_region: Optional[str] = None
-                bedrock_inference_profile: Optional[str] = None
                 if model_cfg.get("provider") == "bedrock":
                     bedrock_model_id = model_cfg.get("model_name") or model_cfg.get("model_id")
                     bedrock_region = model_cfg.get("aws_region", "ap-southeast-1")
@@ -602,6 +631,7 @@ class ExperimentRunner:
                     excluded_tools=sandbox_excluded_tools if memory_sandbox_active else None,
                 )
                 agent = Agent(agent_config)
+                runtime_refs["agent"] = agent
 
                 session_results = []
                 all_tool_logs: list[dict] = []
@@ -971,6 +1001,12 @@ class ExperimentRunner:
                     if agent is not None:
                         agent.close()
                         agent = None
+                        runtime_refs["agent"] = None
+                    memory = runtime_refs.get("memory")
+                    if memory is not None:
+                        memory.close()
+                        runtime_refs["memory"] = None
+                    self.state_isolator.cleanup(db_path)
                     # Sleep and retry
                     time.sleep(sleep_time)
                     continue
@@ -1019,12 +1055,6 @@ class ExperimentRunner:
                     bedrock_inference_profile=bedrock_inference_profile,
                     trigger_steps_before_exfil=None,
                 )
-                # Cancel timeout alarm
-                signal.alarm(0)
-                # Explicitly close agent connection to prevent file descriptor leaks
-                if agent is not None:
-                    agent.close()
-                self.state_isolator.cleanup(db_path)
 
     def _build_attack(self, attack_cfg: dict, tools: dict):
         attack_type = attack_cfg.get("type", "no_attack")

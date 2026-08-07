@@ -66,7 +66,12 @@ class EmailTool(InstrumentedTool):
         self._draft_call_count = 0
         self._send_call_count = 0
 
+    def _clear_session_records(self) -> None:
+        """Clear agent-visible email records without changing evaluator logs."""
+        self.emails.clear()
+
     def reset(self) -> None:
         super().reset()
         self.emails.clear()
         self._draft_call_count = 0
+        self._send_call_count = 0

@@ -39,6 +39,12 @@ class RAGTool(InstrumentedTool):
     def inject_document(self, doc: RAGDocument) -> None:
         self.corpus.append(doc)
 
+    def _remove_documents(self, doc_ids: set[str]) -> list[str]:
+        """Remove internal corpus documents by ID without exposing an agent tool."""
+        removed = [doc.doc_id for doc in self.corpus if doc.doc_id in doc_ids]
+        self.corpus = [doc for doc in self.corpus if doc.doc_id not in doc_ids]
+        return removed
+
     def query(self, query_text: str, top_k: int = 3) -> list[RAGDocument]:
         self._query_call_count += 1
         if self._query_call_count > self._SESSION_QUERY_LIMIT:

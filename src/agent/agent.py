@@ -189,7 +189,7 @@ def _make_lc_tools(tools_dict: dict, excluded_tools: set | None = None) -> list[
             attr = getattr(tool_instance, method_name)
             if not callable(attr):
                 continue
-            if method_name in ("reset", "get_log", "reset_call_count"):
+            if method_name in ("reset", "get_log", "reset_call_count", "close"):
                 continue
 
             tool_key = f"{name}_{method_name}"
