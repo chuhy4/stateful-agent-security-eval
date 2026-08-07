@@ -9,10 +9,30 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Optional
 
-from src.runner.config_loader import ExperimentConfig
+from src.runner.config_loader import ExperimentConfig, normalize_reset_conditions
+from src.runner.reset_policy import ResetCondition
 from src.runner.runner import ExperimentRunner, RunResult
 
 logger = logging.getLogger(__name__)
+
+_PARALLEL_RESET_POLICY_UNAVAILABLE = (
+    "PARALLEL_RESET_POLICY_UNAVAILABLE: use serial ExperimentRunner"
+)
+
+
+def _reject_parallel_reset_policy(
+    *,
+    reset_conditions: object = None,
+    condition: dict | None = None,
+) -> None:
+    """Fail closed before parallel reset-policy execution can start."""
+    if reset_conditions is not None:
+        normalize_reset_conditions(reset_conditions)
+        raise RuntimeError(_PARALLEL_RESET_POLICY_UNAVAILABLE)
+
+    if condition is not None and "reset_condition" in condition:
+        ResetCondition(condition["reset_condition"])
+        raise RuntimeError(_PARALLEL_RESET_POLICY_UNAVAILABLE)
 
 
 def _append_result_worker(result: dict, path: str) -> None:
@@ -49,6 +69,11 @@ def _run_condition_batch(
     Each worker owns one condition (attack × defense × model). With one worker
     per model, Ollama never needs to swap models mid-run.
     """
+    _reject_parallel_reset_policy(
+        reset_conditions=config_dict.get("reset_conditions"),
+        condition=condition,
+    )
+
     # Configure logging in worker process
     worker_logger = logging.getLogger()
     if not worker_logger.handlers:
@@ -137,6 +162,8 @@ class ParallelExperimentRunner:
             config: ExperimentConfig
             num_workers: Number of worker processes. If None, uses CPU count.
         """
+        _reject_parallel_reset_policy(reset_conditions=config.reset_conditions)
+
         self.config = config
         self.num_workers = num_workers or mp.cpu_count()
         logger.info("Initialized ParallelExperimentRunner with %d workers", self.num_workers)
@@ -146,6 +173,10 @@ class ParallelExperimentRunner:
         
         Already-completed conditions (by condition hash) are skipped.
         """
+        _reject_parallel_reset_policy(
+            reset_conditions=self.config.reset_conditions
+        )
+
         if not results_path:
             results_path = self.config.results_path
         
