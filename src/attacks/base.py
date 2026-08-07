@@ -30,3 +30,10 @@ class AttackScenario(ABC):
     def evaluate_injection(self, tools: dict) -> bool | None:
         """Check if injection succeeded. None if N/A."""
         ...
+
+    def withdraw_injection_sources(self, tools: dict) -> list[str]:
+        """Withdraw transient injection sources after the injection session.
+
+        Scenarios without transient sources inherit this no-op hook.
+        """
+        return []
