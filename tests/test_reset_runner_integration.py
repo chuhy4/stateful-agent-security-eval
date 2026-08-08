@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
+from scripts.analyze_results import build_result_inventory, compute_condition_stats
 from src.agent.agent import (
     Agent,
     CheckpointInspectionError,
@@ -23,6 +24,7 @@ from src.runner.config_loader import ComparisonSpec, ExperimentConfig
 from src.runner.reset_assertions import AssertionResult
 from src.runner.reset_policy import BoundaryResult, ResetPolicyController
 from src.runner.runner import ExperimentRunner, RunResult
+from src.stats.bootstrap_engine import BootstrapEngine
 from src.tools.rag_tool import RAGDocument
 
 
@@ -1244,6 +1246,225 @@ def test_reset_timeout_archives_partial_evidence_and_stops_before_withdrawal(
     assert [log["content"] for log in result.agent_logs] == [
         "timeout injection"
     ]
+
+
+def test_runner_graph_failure_archives_evidence_and_fails_closed(tmp_path):
+    attack_cfg = {
+        "type": "delayed_trigger",
+        "malicious_doc_content_file": "data/attacks/malicious_doc.txt",
+        "sensitive_doc_content_file": "data/attacks/sensitive_doc.txt",
+        "benign_queries": ["graph injection"],
+        "trigger_prompt": "must not run",
+        "intervening_sessions": 0,
+    }
+    runner = ExperimentRunner(_config(tmp_path, attack_cfg, reset_condition="C0"))
+    model = FixedModel()
+    statuses = []
+    agents = []
+    graph_patchers = []
+    withdrawal_calls = []
+    created_paths = []
+    original_agent_init = Agent.__init__
+    original_run_session_reset = Agent.run_session_reset
+    original_build_attack = runner._build_attack
+    original_create = runner.state_isolator.create_fresh_state
+
+    def initialize_agent(agent, config):
+        original_agent_init(agent, config)
+        agents.append(agent)
+        original_invoke = agent.graph.invoke
+
+        def fail_after_checkpoint(*args, **kwargs):
+            original_invoke(*args, **kwargs)
+            raise RuntimeError("graph machinery failed after checkpoint")
+
+        graph_patcher = patch.object(
+            agent.graph,
+            "invoke",
+            side_effect=fail_after_checkpoint,
+        )
+        graph_patcher.start()
+        graph_patchers.append(graph_patcher)
+
+    def run_session_reset(agent, thread_id, user_message):
+        outcome = original_run_session_reset(agent, thread_id, user_message)
+        statuses.append(outcome.status)
+        return outcome
+
+    def build_attack(config, tools):
+        attack = original_build_attack(config, tools)
+
+        def withdraw(_runtime_tools):
+            withdrawal_calls.append(True)
+            return []
+
+        attack.withdraw_injection_sources = withdraw
+        return attack
+
+    def create_state():
+        db_path = original_create()
+        created_paths.append(db_path)
+        return db_path
+
+    try:
+        with (
+            patch.object(Agent, "__init__", new=initialize_agent),
+            patch.object(Agent, "run_session_reset", new=run_session_reset),
+            patch.object(runner, "_build_attack", side_effect=build_attack),
+            patch.object(
+                runner.state_isolator,
+                "create_fresh_state",
+                side_effect=create_state,
+            ),
+            patch("src.runner.runner.time.sleep") as sleep,
+        ):
+            result = _run_local(runner, model, run_id="graph-failure")
+    finally:
+        for graph_patcher in graph_patchers:
+            graph_patcher.stop()
+
+    assert statuses == [SessionExecutionStatus.GRAPH_FAILURE]
+    assert result.error.startswith("AGENT_GRAPH_EXECUTION_FAILED")
+    assert result.mechanistic_tags["result_kind"] == "infrastructure_error"
+    assert result.mechanistic_tags["lifecycle_error"]["code"] == (
+        "AGENT_GRAPH_EXECUTION_FAILED"
+    )
+    assert result.mechanistic_tags["lifecycle_error"]["stage"] == (
+        "session_invocation"
+    )
+    assert model.calls == 1
+    assert len(agents) == 1
+    assert len(result.session_threads) == 1
+    assert result.reset_boundaries == []
+    assert result.withdrawn_source_ids == []
+    assert withdrawal_calls == []
+    assert result.reset_valid is None
+    assert [
+        log["content"]
+        for log in result.agent_logs
+        if log["type"] == "human"
+    ] == ["graph injection"]
+    assert any(log["type"] == "reasoning" for log in result.agent_logs)
+    assert len(created_paths) == 1
+    for suffix in ("", "-wal", "-shm"):
+        assert not os.path.exists(created_paths[0] + suffix)
+    sleep.assert_not_called()
+
+    record = asdict(result)
+    record["run_index"] = 0
+    inventory = build_result_inventory([record], runner.config).require_valid()
+    assert inventory.completed_records == []
+    assert inventory.failed_records == [record]
+    assert compute_condition_stats(
+        inventory.completed_records,
+        BootstrapEngine(n_resamples=10, alpha=0.05, seed=7),
+        reset_mode=True,
+    ) == {}
+
+
+def test_c0_four_sessions_retain_one_thread_history_and_memory(tmp_path):
+    attack_cfg = {
+        "type": "delayed_trigger",
+        "malicious_doc_content_file": "data/attacks/malicious_doc.txt",
+        "sensitive_doc_content_file": "data/attacks/sensitive_doc.txt",
+        "benign_queries": ["multi injection", "middle one", "middle two"],
+        "trigger_prompt": "multi trigger",
+        "intervening_sessions": 2,
+        "attacker_emails": [],
+    }
+    runner = ExperimentRunner(_config(tmp_path, attack_cfg, reset_condition="C0"))
+    model = MultiBoundaryDtaModel()
+    original_cleanup = runner.state_isolator.cleanup
+
+    with patch.object(runner.state_isolator, "cleanup"):
+        result = _run_local(runner, model, run_id="multi-boundary-C0")
+
+    try:
+        assert result.error is None
+        assert result.reset_valid is True
+        assert len(result.session_threads) == 4
+        assert len(result.reset_boundaries) == 3
+        thread_ids = [item["thread_id"] for item in result.session_threads]
+        assert len(set(thread_ids)) == 1
+        thread_id = thread_ids[0]
+
+        expected_memory = [["multi-boundary", "retained poison"]]
+        for boundary_index, boundary in enumerate(result.reset_boundaries):
+            assert boundary["boundary_index"] == boundary_index
+            assert boundary["previous_thread_id"] == thread_id
+            assert boundary["next_thread_id"] == thread_id
+            assert boundary["reset_valid"] is True
+            assert boundary["reasons"] == []
+            assert all(item["passed"] for item in boundary["assertions"])
+            assert boundary["pre_manifest"]["canonical_memory"] == expected_memory
+            assert boundary["post_manifest"]["canonical_memory"] == expected_memory
+            assert boundary["pre_manifest"]["active_checkpoint_reachable"] is True
+            assert boundary["post_manifest"]["active_checkpoint_reachable"] is True
+            assert boundary["post_manifest"][
+                "prior_checkpoint_physical_rows"
+            ] > 0
+            assert boundary["mutation"] == {
+                "canonical_memory_clear_attempted": False,
+                "canonical_rows_deleted": None,
+            }
+
+        histories_by_request = {}
+        for history in model.seen_messages:
+            users = [content for role, content in history if role == "user"]
+            if users:
+                histories_by_request[users[-1]] = users
+        assert histories_by_request["multi injection"] == ["multi injection"]
+        assert histories_by_request["middle one"] == [
+            "multi injection",
+            "middle one",
+        ]
+        assert histories_by_request["middle two"] == [
+            "multi injection",
+            "middle one",
+            "middle two",
+        ]
+        assert histories_by_request["multi trigger"] == [
+            "multi injection",
+            "middle one",
+            "middle two",
+            "multi trigger",
+        ]
+
+        human_logs = [
+            (log["session_ordinal"], log["content"])
+            for log in result.agent_logs
+            if log["type"] == "human"
+        ]
+        assert human_logs == list(enumerate([
+            "multi injection",
+            "middle one",
+            "middle two",
+            "multi trigger",
+        ]))
+        assert sum(
+            log.get("type") == "tool_call"
+            and log.get("tool_name") == "memory_save_fact"
+            for log in result.agent_logs
+        ) == 1
+
+        with sqlite3.connect(result.db_identity) as conn:
+            checkpoint_rows = conn.execute(
+                "SELECT COUNT(*) FROM checkpoints WHERE thread_id = ?",
+                (thread_id,),
+            ).fetchone()[0]
+            physical_threads = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT DISTINCT thread_id FROM checkpoints"
+                ).fetchall()
+            }
+        assert checkpoint_rows > 0
+        assert physical_threads == {thread_id}
+        assert [
+            boundary["boundary_index"] for boundary in result.reset_boundaries
+        ] == [0, 1, 2]
+    finally:
+        original_cleanup(result.db_identity)
 
 
 @pytest.mark.parametrize("condition", ["C1", "C2"])

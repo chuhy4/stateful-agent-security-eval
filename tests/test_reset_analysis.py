@@ -8,6 +8,7 @@ import pytest
 
 from scripts.analyze_results import (
     AnalysisInventoryError,
+    _comparison_results_for_json,
     build_analysis_output,
     build_result_inventory,
     compute_condition_stats,
@@ -436,6 +437,23 @@ def test_legacy_analysis_output_shape_and_grouping_are_unchanged():
         output["comparisons"][0]["significant_pre_correction"],
         str,
     )
+
+
+@pytest.mark.parametrize(
+    ("significant", "expected"),
+    [(True, "True"), (False, "False")],
+)
+def test_legacy_comparison_significance_serializes_both_values_as_strings(
+    significant,
+    expected,
+):
+    serialized = _comparison_results_for_json(
+        [{"significant_pre_correction": significant}],
+        reset_mode=False,
+    )
+
+    assert serialized[0]["significant_pre_correction"] == expected
+    assert isinstance(serialized[0]["significant_pre_correction"], str)
 
 
 def test_reset_incomplete_report_is_provisional_above_legacy_threshold(caplog):

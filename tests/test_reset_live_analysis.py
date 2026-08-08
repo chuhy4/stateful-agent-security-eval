@@ -156,6 +156,45 @@ def test_reset_live_gates_treat_any_non_none_error_as_failed(tmp_path):
     runner._check_no_attack_btcr_floor([failed])
 
 
+def test_reset_live_fpr_excludes_error_records_from_denominator(tmp_path):
+    runner = ExperimentRunner(_config(tmp_path, ["C0"]))
+    successful = _result("C0", run_index=0, attack_success=False)
+    failures = [
+        _result(
+            "C0",
+            run_index=0,
+            attack_success=True,
+            reset_valid=None,
+            error=f"infrastructure-{index}",
+        )
+        for index in range(2)
+    ]
+
+    runner._check_false_positive_rate([successful])
+    runner._check_false_positive_rate([*failures, successful])
+
+
+def test_reset_live_btcr_excludes_error_records_from_denominator(tmp_path):
+    runner = ExperimentRunner(_config(tmp_path, ["C0"], runs=10))
+    successful = [
+        _result("C0", run_index=index, btcr_success=True)
+        for index in range(10)
+    ]
+    failures = [
+        _result(
+            "C0",
+            run_index=index,
+            btcr_success=False,
+            reset_valid=None,
+            error=f"infrastructure-{index}",
+        )
+        for index in range(10)
+    ]
+
+    runner._check_no_attack_btcr_floor(successful)
+    runner._check_no_attack_btcr_floor([*failures, *successful])
+
+
 def test_reset_live_identity_accepts_current_config_result(tmp_path):
     runner = ExperimentRunner(_config(tmp_path, ["C0"]))
 
@@ -501,13 +540,58 @@ def test_reset_resume_rejects_schema_invalid_record_before_execution(tmp_path):
     run_single.assert_not_called()
 
 
+def test_reset_resume_rejects_malformed_json_array_before_execution(tmp_path):
+    config = _config(tmp_path, ["C0"], runs=2)
+    runner = ExperimentRunner(config)
+    result = _result("C0", run_index=0)
+    result.condition = runner._enumerate_conditions()[0]
+    Path(config.results_path).write_text(
+        "[" + json.dumps(asdict(result)) + ", {]"
+    )
+
+    with (
+        patch.object(runner, "_run_single") as run_single,
+        pytest.raises(RuntimeError, match="malformed reset history JSON array"),
+    ):
+        runner.run_all()
+
+    run_single.assert_not_called()
+
+
+def test_reset_resume_rejects_schema_invalid_json_array_before_execution(
+    tmp_path,
+):
+    config = _config(tmp_path, ["C0"], runs=2)
+    runner = ExperimentRunner(config)
+    condition = runner._enumerate_conditions()[0]
+    valid = _result("C0", run_index=0)
+    valid.condition = condition
+    Path(config.results_path).write_text(json.dumps([
+        asdict(valid),
+        {"condition": condition, "reset_condition": "C0"},
+    ]))
+
+    with (
+        patch.object(runner, "_run_single") as run_single,
+        pytest.raises(RuntimeError, match="does not match RunResult schema"),
+    ):
+        runner.run_all()
+
+    run_single.assert_not_called()
+
+
 @pytest.mark.parametrize(
     "mutate_record",
     [
         lambda record: record["condition"].pop("reset_condition"),
         lambda record: record.__setitem__("reset_condition", "C9"),
+        lambda record: record.__setitem__("reset_condition", "C1"),
     ],
-    ids=["missing-condition-reset", "invalid-top-level-reset"],
+    ids=[
+        "missing-condition-reset",
+        "invalid-top-level-reset",
+        "condition-top-level-mismatch",
+    ],
 )
 def test_reset_resume_rejects_malformed_identity_before_execution(
     tmp_path,
@@ -542,6 +626,29 @@ def test_legacy_resume_still_skips_malformed_jsonl_rows(tmp_path):
     Path(config.results_path).write_text(
         json.dumps(asdict(existing)) + "\n{broken\n"
     )
+    executed = []
+
+    def fake_run(current_condition, run_id):
+        result = _result(None)
+        result.run_id = run_id
+        result.condition = current_condition
+        executed.append(result)
+        return result
+
+    with patch.object(runner, "_run_single", side_effect=fake_run):
+        runner.run_all()
+
+    assert len(executed) == 1
+    assert executed[0].run_index == 1
+
+
+def test_legacy_resume_json_array_behavior_is_unchanged(tmp_path):
+    config = _config(tmp_path, runs=2)
+    runner = ExperimentRunner(config)
+    condition = runner._enumerate_conditions()[0]
+    existing = _result(None, run_index=None)
+    existing.condition = condition
+    Path(config.results_path).write_text(json.dumps([asdict(existing)]))
     executed = []
 
     def fake_run(current_condition, run_id):
