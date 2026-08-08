@@ -1,11 +1,18 @@
 """Plot generation functions for the security evaluation framework."""
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+
+FACTORIAL_GRID_RESET_UNSUPPORTED = (
+    "FACTORIAL_GRID_RESET_UNSUPPORTED: plot_factorial_grid supports only the "
+    "legacy attack × model × defense structure"
+)
 
 
 def _use_style() -> None:
@@ -116,10 +123,35 @@ def plot_factorial_grid(stats: dict, output_path: str) -> None:
         plt.close()
         return
 
+    if any(",reset_condition=" in str(key) for key in stats):
+        raise ValueError(FACTORIAL_GRID_RESET_UNSUPPORTED)
+    for attack, model_map in stats.items():
+        if not isinstance(model_map, Mapping):
+            raise TypeError(f"Invalid factorial grid attack cell: {attack!r}")
+        for model, defense_map in model_map.items():
+            if not isinstance(defense_map, Mapping):
+                raise TypeError(f"Invalid factorial grid model cell: {model!r}")
+            for defense, leaf in defense_map.items():
+                if not isinstance(leaf, Mapping):
+                    raise TypeError(
+                        f"Invalid factorial grid defense cell: {defense!r}"
+                    )
+                if "asr" not in leaf:
+                    if any(
+                        str(key) in {"C0", "C1", "C2"}
+                        or str(key).startswith("reset_condition=")
+                        for key in leaf
+                    ):
+                        raise ValueError(FACTORIAL_GRID_RESET_UNSUPPORTED)
+                    raise ValueError(
+                        "Invalid legacy factorial grid structure: defense cells "
+                        "must directly contain ASR statistics"
+                    )
+
     _use_style()
     attacks = list(stats.keys())
-    models = list({m for a in stats.values() for m in a.keys()})
-    defenses = list({d for a in stats.values() for m in a.values() for d in m.keys()})
+    models = list({m for a in stats.values() for m in a})
+    defenses = list({d for a in stats.values() for m in a.values() for d in m})
 
     n_rows, n_cols = len(attacks), len(models)
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(n_cols * 4, n_rows * 3.5), squeeze=False)
@@ -139,7 +171,7 @@ def plot_factorial_grid(stats: dict, output_path: str) -> None:
                 lowers.append(d["point_estimate"] - d["lower"])
                 uppers.append(d["upper"] - d["point_estimate"])
 
-            bars = ax.bar(
+            ax.bar(
                 x,
                 points,
                 width,
@@ -183,7 +215,6 @@ def plot_meta_analysis(meta_results: list, output_path: str) -> None:
 
     for i, r in enumerate(meta_results):
         # Support both dataclass and dict
-        paper_name = r.paper if hasattr(r, "paper") else r["paper"]
         asr = r.reported_asr if hasattr(r, "reported_asr") else r["reported_asr"]
         lo = r.wilson_ci_lower if hasattr(r, "wilson_ci_lower") else r["wilson_ci_lower"]
         hi = r.wilson_ci_upper if hasattr(r, "wilson_ci_upper") else r["wilson_ci_upper"]

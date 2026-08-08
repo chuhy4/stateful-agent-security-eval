@@ -29,6 +29,10 @@ logger = logging.getLogger(__name__)
 
 RESULTS_PATH = "results/sandbox_inversion/results.jsonl"
 INJECTION_FLOOR = 0.90
+SANDBOX_RESET_POLICY_UNSUPPORTED = (
+    "SANDBOX_RESET_POLICY_UNSUPPORTED: reset-policy results require "
+    "scripts/analyze_results.py"
+)
 
 
 def _condition_key(r: dict) -> str:
@@ -52,6 +56,12 @@ def load_results(path: str) -> list[dict]:
                 r = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            condition = r.get("condition", {})
+            if (
+                isinstance(condition, dict)
+                and "reset_condition" in condition
+            ) or r.get("reset_condition") is not None:
+                raise ValueError(SANDBOX_RESET_POLICY_UNSUPPORTED)
             if r.get("error"):
                 continue
             records.append(r)
